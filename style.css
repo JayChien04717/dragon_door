@@ -393,3 +393,39 @@ input[type="range"] {
     width: 100%;
     margin-top: 4px;
 }
+
+/* --- Timer Bar with Countdown --- */
+.timer-bar-container {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+    padding: 0 4px;
+}
+
+.countdown-text {
+    font-family: 'Cinzel', serif;
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--accent-gold);
+    min-width: 32px;
+    text-align: center;
+    text-shadow: 0 0 12px rgba(251, 191, 36, 0.4);
+}
+
+.timer-bar-track {
+    flex: 1;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.timer-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-red), var(--accent-gold), var(--accent-green));
+    border-radius: 3px;
+    transition: width 0.1s linear;
+    width: 100%;
+}

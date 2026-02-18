@@ -45,10 +45,14 @@ class GameState:
         self.players = []  # [{id, name, balance, connected}]
         self.pot = 0
         self.ante = 10
-        self.round_phase = 'WAITING'  # WAITING | IN_ROUND
+        self.round_phase = 'WAITING'  # WAITING | IN_ROUND | COUNTDOWN
         self.player_states = {}  # session_id -> {cards, phase, result_msg, bet, choice}
         self.message = "Waiting for players..."
         self.last_update_id = 0
+        self.auto_deal_task = None  # asyncio.Task for auto-deal countdown
+        self.countdown_seconds = 0
+        self.decision_timer_task = None  # asyncio.Task for 5s decision timer
+        self.decision_deadline = 0  # timestamp when decisions must be made
 
     def add_player(self, session_id, name):
         for p in self.players:
@@ -86,9 +90,16 @@ class GameState:
                 del self.player_states[session_id]
             self.message = f"{removed['name']} disconnected."
             self.last_update_id += 1
+            # Cancel auto-deal if in countdown and no players left
+            if self.round_phase == 'COUNTDOWN':
+                if not self.players:
+                    if self.auto_deal_task and not self.auto_deal_task.done():
+                        self.auto_deal_task.cancel()
+                        self.auto_deal_task = None
+                    self.round_phase = 'WAITING'
             # Check if round completes after removal
-            if self.round_phase == 'IN_ROUND':
-                self._check_round_complete()
+            elif self.round_phase == 'IN_ROUND':
+                self._check_all_bets_placed()
 
     def get_state_for_player(self, session_id):
         ps = self.player_states.get(session_id, {
@@ -121,7 +132,8 @@ class GameState:
             'my_result_msg': ps.get('result_msg', ''),
             'message': self.message,
             'ante': self.ante,
-            'update_id': self.last_update_id
+            'update_id': self.last_update_id,
+            'decision_deadline': self.decision_deadline
         }
 
     # --- Actions ---
@@ -132,6 +144,10 @@ class GameState:
 
         if action_type == 'DEAL':
             if self.round_phase == 'WAITING' and len(self.players) >= 1:
+                # Cancel any pending auto-deal
+                if self.auto_deal_task and not self.auto_deal_task.done():
+                    self.auto_deal_task.cancel()
+                    self.auto_deal_task = None
                 self.deal_all()
             return
 
@@ -187,11 +203,37 @@ class GameState:
                 ps['phase'] = 'SHOOTING'
 
         self.round_phase = 'IN_ROUND'
-        self.message = "Cards dealt! Place your bets."
+        self.message = "Cards dealt! You have 5 seconds!"
         self.last_update_id += 1
+        self.decision_deadline = time.time() + 5
+
+        # Start decision timer
+        if self.decision_timer_task and not self.decision_timer_task.done():
+            self.decision_timer_task.cancel()
+        self.decision_timer_task = asyncio.get_event_loop().create_task(self._decision_timer())
 
         # Check if all auto-passed (unlikely but possible)
         self._check_all_bets_placed()
+
+    async def _decision_timer(self):
+        """Wait 5 seconds then auto-pass all undecided players."""
+        try:
+            await asyncio.sleep(5)
+            if self.round_phase != 'IN_ROUND':
+                return
+            # Auto-pass everyone who hasn't acted
+            for p in self.players:
+                sid = p['id']
+                ps = self.player_states.get(sid)
+                if ps and ps['phase'] in ('SHOOTING', 'SHOOTING_SPECIAL'):
+                    ps['phase'] = 'DONE'
+                    ps['bet'] = 0
+                    ps['result_msg'] = '⏰ Time up! Auto Pass.'
+            self.last_update_id += 1
+            self._check_all_bets_placed()
+            await broadcast_personalized_state()
+        except asyncio.CancelledError:
+            pass
 
     def _place_bet(self, player, ps, bet, choice=None):
         """Player places a bet. Does NOT resolve yet — waits for all players."""
@@ -223,6 +265,10 @@ class GameState:
             if p['id'] in self.player_states
         )
         if all_decided:
+            # Cancel decision timer since everyone decided
+            if self.decision_timer_task and not self.decision_timer_task.done():
+                self.decision_timer_task.cancel()
+                self.decision_timer_task = None
             self._resolve_round()
 
     def _resolve_round(self):
@@ -298,11 +344,32 @@ class GameState:
                     w['ps']['result_msg'] = f"WIN! +${payout} (pot split)"
                     w['ps']['phase'] = 'DONE'
 
-        # Step 4: Round complete
-        self.round_phase = 'WAITING'
-        self.message = "Round complete! Anyone can click Deal."
+        # Step 4: Round complete — schedule auto-deal
+        self.round_phase = 'COUNTDOWN'
+        self.countdown_seconds = 3
+        self.message = "Round complete! Next deal in 3s..."
         self.last_update_id += 1
         self._check_redistribute()
+        # Schedule the auto-deal coroutine
+        self.auto_deal_task = asyncio.get_event_loop().create_task(self._auto_deal_countdown())
+
+    async def _auto_deal_countdown(self):
+        """Countdown then auto-deal the next round."""
+        try:
+            for i in range(3, 0, -1):
+                self.countdown_seconds = i
+                self.message = f"Next deal in {i}s..."
+                self.last_update_id += 1
+                await broadcast_personalized_state()
+                await asyncio.sleep(1)
+            # Deal!
+            self.deal_all()
+            await broadcast_personalized_state()
+        except asyncio.CancelledError:
+            # Cancelled (e.g. player disconnected)
+            self.round_phase = 'WAITING'
+            self.message = "Auto-deal cancelled. Click Start Game."
+            self.last_update_id += 1
 
     def _judge_normal(self, ps, res):
         """Judge a normal gate shot. Returns 'win', 'hit_post', or 'miss'."""
@@ -360,16 +427,43 @@ game = GameState()
 
 connected_clients = {}  # websocket -> session_id
 client_last_activity = {}  # websocket -> timestamp
+client_last_update_id = {}  # websocket -> last sent update_id
 IDLE_TIMEOUT = 180  # 3 minutes in seconds
 
+# Debounce mechanism
+_broadcast_pending = False
+_broadcast_lock = asyncio.Lock()
+
 async def broadcast_personalized_state():
+    """Send personalized state to all clients concurrently, with dedup."""
+    tasks = []
     for ws, sid in list(connected_clients.items()):
         if sid:
+            # Dedup: skip if client already has latest state
+            last_sent = client_last_update_id.get(ws, -1)
+            if last_sent == game.last_update_id:
+                continue
+            client_last_update_id[ws] = game.last_update_id
             state = game.get_state_for_player(sid)
-            try:
-                await ws.send(json.dumps({'type': 'STATE', 'state': state}))
-            except Exception:
-                pass
+            tasks.append(_send_state(ws, state))
+    if tasks:
+        await asyncio.gather(*tasks)
+
+async def _send_state(ws, state):
+    try:
+        await ws.send(json.dumps({'type': 'STATE', 'state': state}))
+    except Exception:
+        pass
+
+async def schedule_broadcast():
+    """Debounced broadcast — batches rapid state changes within 50ms."""
+    global _broadcast_pending
+    if _broadcast_pending:
+        return
+    _broadcast_pending = True
+    await asyncio.sleep(0.05)  # 50ms debounce
+    _broadcast_pending = False
+    await broadcast_personalized_state()
 
 async def idle_checker():
     """Periodically check for idle clients and disconnect them."""
@@ -419,8 +513,8 @@ async def ws_handler(websocket):
             elif req_type == 'ACTION':
                 game.handle_action(session_id, data.get('action'), data.get('payload', {}))
 
-            # Broadcast personalized state to each client
-            await broadcast_personalized_state()
+            # Broadcast personalized state to each client (debounced)
+            await schedule_broadcast()
 
     except websockets.exceptions.ConnectionClosed:
         pass
@@ -429,6 +523,8 @@ async def ws_handler(websocket):
             del connected_clients[websocket]
         if websocket in client_last_activity:
             del client_last_activity[websocket]
+        if websocket in client_last_update_id:
+            del client_last_update_id[websocket]
         game.remove_player(session_id)
         await broadcast_personalized_state()
 

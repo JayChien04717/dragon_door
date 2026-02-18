@@ -23,8 +23,16 @@ const els = {
     btnPass: document.getElementById('pass-btn'),
     highLowControls: document.getElementById('high-low-controls'),
     myStatus: document.getElementById('my-status'),
-    playersContainer: document.getElementById('players-container')
+    playersContainer: document.getElementById('players-container'),
+    timerBarContainer: document.getElementById('timer-bar-container'),
+    timerBar: document.getElementById('timer-bar'),
+    countdownText: document.getElementById('countdown-text')
 };
+
+// --- Timer State ---
+let timerInterval = null;
+let prevMyPhase = 'IDLE';
+let prevRoundPhase = 'WAITING';
 
 // --- WebSocket Connection ---
 function connect() {
@@ -160,6 +168,35 @@ function renderPlayers(players) {
     });
 }
 
+// --- Timer Bar ---
+function startTimerBar(deadline) {
+    stopTimerBar();
+    els.timerBarContainer.classList.remove('hidden');
+    const totalDuration = 5; // 5 seconds
+
+    timerInterval = setInterval(() => {
+        const now = Date.now() / 1000;
+        const remaining = Math.max(0, deadline - now);
+        const pct = (remaining / totalDuration) * 100;
+        els.timerBar.style.width = `${pct}%`;
+        els.countdownText.innerText = Math.ceil(remaining);
+        if (remaining <= 0) {
+            stopTimerBar();
+        }
+    }, 50);
+}
+
+function stopTimerBar() {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+    els.timerBarContainer.classList.add('hidden');
+    els.timerBar.style.width = '100%';
+    els.countdownText.innerText = '';
+}
+
+
 // --- Render Full State ---
 function renderState(state) {
     // Players
@@ -184,20 +221,41 @@ function renderState(state) {
         els.myStatus.classList.add('hidden');
     }
 
-    // Controls
+    // --- Track phase ---
     const myPhase = state.my_phase;
     const roundPhase = state.round_phase;
+    prevMyPhase = myPhase;
 
+    // --- Timer bar: show during IN_ROUND when player needs to decide ---
+    if (roundPhase === 'IN_ROUND' && (myPhase === 'SHOOTING' || myPhase === 'SHOOTING_SPECIAL')) {
+        if (state.decision_deadline && !timerInterval) {
+            startTimerBar(state.decision_deadline);
+        }
+    } else {
+        stopTimerBar();
+    }
+    prevRoundPhase = roundPhase;
+
+    // Controls
     els.highLowControls.classList.add('hidden');
 
     if (roundPhase === 'WAITING') {
-        // Anyone can deal
+        // Anyone can start the game
         els.btnDeal.disabled = false;
+        els.btnDeal.innerText = 'Start Game';
+        els.btnShoot.disabled = true;
+        els.btnPass.disabled = true;
+        els.betSlider.disabled = true;
+    } else if (roundPhase === 'COUNTDOWN') {
+        // Auto-deal countdown — disable everything
+        els.btnDeal.disabled = true;
+        els.btnDeal.innerText = 'Dealing...';
         els.btnShoot.disabled = true;
         els.btnPass.disabled = true;
         els.betSlider.disabled = true;
     } else if (roundPhase === 'IN_ROUND') {
         els.btnDeal.disabled = true;
+        els.btnDeal.innerText = 'In Round';
 
         if (myPhase === 'SHOOTING') {
             els.btnShoot.disabled = false;
