@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shoot the Gate | 射龍門</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Inter:wght@400;600&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+
+    <!-- Login Modal -->
+    <div id="login-modal" class="modal">
+        <div class="modal-content">
+            <h2>Join Table</h2>
+            <div class="input-group">
+                <label for="username-input">Enter Your Name</label>
+                <input type="text" id="username-input" maxlength="10" placeholder="e.g. Jay">
+            </div>
+            <div class="input-group">
+                <label for="ante-input">Ante Amount (per Deal)</label>
+                <input type="number" id="ante-input" min="1" max="500" value="10" placeholder="10">
+            </div>
+            <button id="join-btn" class="primary-btn">Join Game</button>
+            <div id="connection-status" style="margin-top:10px; font-size: 0.8rem; color: #64748b;">Initializing...
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Game UI -->
+    <div id="game-container" class="game-container">
+
+        <!-- Center Area: Pot & Message -->
+        <div class="center-hud">
+            <div class="pot-display">
+                <span class="label">POT</span>
+                <span id="pot-display" class="value">$0</span>
+            </div>
+            <div id="message-area" class="message-area">
+                Loading...
+            </div>
+        </div>
+
+        <!-- My Gate (Cards) -->
+        <div class="my-gate-label">Your Gate</div>
+        <div class="gate-area">
+            <div class="card-slot">
+                <div id="card-left" class="card card-empty"></div>
+            </div>
+
+            <div class="card-slot center-slot">
+                <div id="card-result" class="card card-empty"></div>
+                <!-- Controls for High/Low -->
+                <div id="high-low-controls" class="hidden">
+                    <button class="choice-btn" data-choice="high">Higher</button>
+                    <button class="choice-btn" data-choice="low">Lower</button>
+                </div>
+            </div>
+
+            <div class="card-slot">
+                <div id="card-right" class="card card-empty"></div>
+            </div>
+        </div>
+
+        <!-- My Result -->
+        <div id="my-status" class="my-result-msg hidden"></div>
+
+        <!-- Dynamic Players -->
+        <div id="players-container" class="players-grid">
+        </div>
+
+        <!-- Betting Controls -->
+        <div class="controls-area">
+            <div class="bet-slider-container">
+                <label>Bet: <span id="current-bet-display" class="gold-text">$0</span></label>
+                <input type="range" id="bet-slider" min="0" max="100" value="0" disabled>
+            </div>
+
+            <div class="action-buttons">
+                <button id="deal-btn" class="action-btn">Deal</button>
+                <button id="shoot-btn" class="action-btn" disabled>Shoot</button>
+                <button id="pass-btn" class="action-btn secondary" disabled>Pass</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
